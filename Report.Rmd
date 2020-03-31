@@ -1,0 +1,481 @@
+---
+title: "Gold Ounce Price Prediction Trials"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data Preparation 
+
+In this self-developed study, my aim was to forecast gold ounce prices in terms of USD by using Gold ounce prices daily history data from 29.12.1978 to 28.02.2020 and it obtained from (Gold.org) <https://www.gold.org/download/file/8369/Prices.xlsx>
+(the webpage may require membership to download the dataset)
+
+(This content is for informal purposes only, 
+NO INVESTMENT ADVICE!)
+
+*Note : I learned theory of these content below from several MOOCs but especially from Practical Time Series Analysis by The State University of New York provided from COURSERA <https://www.coursera.org/learn/practical-time-series-analysis> *
+
+
+```{r, echo=FALSE}
+setwd("E:/git projects/gold")
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(readxl)
+library(astsa)
+library(forecast)
+library(zoo)
+```
+
+```{r, warning=FALSE}
+df <- read_excel("prices.xlsx", skip = 8, sheet = "Daily")
+df <- df[1:2]
+colnames(df) <- c("dates", "Ounce_Price")
+str(df)
+head(df)
+tail(df)
+```
+
+It seems that the dataset does not include financial holidays, like weekends etc. So I first planned to complete missing dates with the Ounce Price values of previous days of filled ones. So I used ```complete()``` function to add missing dates and when the missing dates filled, Ounce Prices corresponds to filled dates filled with NA values. So I used ```na.locf()``` fuction from ```zoo``` package to fill **NA** values with previous values. 
+
+```{r, warning=FALSE}
+df1 <- df %>% 
+  complete(dates = seq(dates[1], as.POSIXct(strptime("2020-02-29", "%Y-%m-%d")), by = "1 day"),
+           fill = list(Ounce_Price = NA))
+
+df1 <- na.locf(df1)
+
+df1$dates <- as.Date(df1$dates)
+```
+
+### Linear Regression
+
+Under this topic, I first tried Linear Regression. I set my model by taking logarithm of Ounce_Price as my target variable and using dates as predictors. 
+
+
+```{r}
+exp.model <- lm(log(Ounce_Price)~dates,data = df1) 
+exp.model.df <- data.frame(x=df1$dates,
+                           y=exp(fitted(exp.model)))
+
+ggplot(df1, aes(x = dates, y = Ounce_Price)) + geom_point() +
+  stat_smooth(method = 'lm', aes(colour = 'linear'), se = FALSE) +
+  stat_smooth(method = 'lm', formula = y ~ poly(x,2), aes(colour = 'quadratic'), se= FALSE) +
+  stat_smooth(method = 'lm', formula = y ~ poly(x,3), aes(colour = 'cubic'), se = FALSE)+
+  stat_smooth(method = 'lm', formula = y ~ poly(x,4), aes(colour = 'quartic'), se = FALSE)+
+  stat_smooth(data=exp.model.df, method = 'loess',aes(x,y,colour = 'exponential'), se = FALSE) 
+
+ggplot(df1, aes(x = dates, y = Ounce_Price)) + geom_point() +
+  stat_smooth(method = 'lm', formula = y ~ poly(x,5), aes(colour = 'quintic'), se = FALSE)+
+  stat_smooth(method = 'lm', formula = y ~ poly(x,6), aes(colour = 'sextic'), se = FALSE)+
+  stat_smooth(method = 'lm', formula = y ~ poly(x,7), aes(colour = 'septic'), se = FALSE)+
+  stat_smooth(method = 'lm', formula = y ~ poly(x,8), aes(colour = 'octic'), se = FALSE)
+
+ggplot(df1, aes(x = dates, y = Ounce_Price)) + geom_point() +
+  stat_smooth(method = 'lm', formula = y ~ poly(x,8), aes(colour = 'octic'), se = FALSE)+
+  stat_smooth(method = 'lm', formula = y ~ poly(x,9), aes(colour = 'nonic'), se = FALSE)
+
+```
+
+From generated graphs, best fitted line seems to be generated from taking into account octic polynomial degree of dates. So I fitted model by taking octic polynomial degree of dates as suggested. 
+
+```{r}
+model_octic <- lm(data = df1, Ounce_Price~poly(dates,8))
+summary(model_octic)
+lo <- loess(resid(model_octic) ~ fitted(model_octic), degree = 1, span=0.8)
+plot(fitted(model_octic),resid(model_octic))
+lines(fitted(model_octic),predict(lo), col='red', lwd=2)
+abline(a=0, b=0, lty=2)
+plot(model_octic, which =2)
+```
+
+Although model coefficients are statistically significant, yet the model assumptions still does not met in terms of Normality and homoscedastisity of variances among residuals. 
+
+So I skip this model and proceed with some other methods. 
+
+### ARIMA & SARIMA
+
+In this section, I tried to fit an (S)ARIMA model to forecast.
+
+But before fitting models I wanted to see and to try to understand if there is a trend or seasonality in data;
+
+```{r}
+plot(df1, main="Daily Gold Prices by ounce, 12.29.1978 to 02.28.2020",
+     ylab = "Price(USD)", xlab = "Date", type="l")
+```
+
+It seems there is instability in variance and a clear upward trend on data so first I will take logarithm to stabilize variance.
+
+```{r}
+plot(log(df1$Ounce_Price), main = "Log of Daily Gold Prices by ounce",
+     ylab = "Log of Price(USD)", xlab = "Days")
+```
+
+This time I tried to remove seasonality by taking difference of data.
+
+```{r}
+plot(diff(df1$Ounce_Price), main = "Differences of Daily Gold Prices by ounce",
+     ylab = "Price(USD)", xlab = "Days")
+```
+
+After trials, I took log-return of the dataset to take care of both seasonality and trend. 
+
+```{r}
+plot(diff(log(df1$Ounce_Price)), main = "Log return of Daily Gold Prices by ounce", ylab = "Log of Price(USD)", xlab = "Days") 
+```
+
+I also added several other transformation trials but this last graph gives the best result so far.
+
+So, I decided to use log-return as my final transformation method. After this decision, I drawed Autocorrelation Function(ACF) and Partial Autocorrelation Function (PACF) to see if there are spikes jump over alpha level, which will help me to decide my AR and MA levels in my ARIMA model and also SAR and SMA levels as well for my Seasonal ARIMA models. 
+
+```{r}
+acf(diff(log(df1$Ounce_Price)), main = "ACF of Log return of Daily Gold Prices by ounce",
+    ylab = "Log of Price(USD)", xlab = "Days") 
+
+pacf(diff(log(df1$Ounce_Price)), main = "PACF of Log return of Daily Gold Prices by ounce",
+    ylab = "Log of Price(USD)", xlab = "Days") 
+
+
+```
+
+There are clear cyclic trends in both graphs. As I mentioned above ACF suggests order of MA process(q), Seasonal MA process(Q) and PACF suggests order of AR process (p) and Seasonal AR process (P) for ARIMA and SARIMA.
+
+As more clear explanation, for example when taking into account ACF plot, if there is a clear spike(s) in beginning lags it refers to the order of MA(q) and if there is a clear spike(s) after several lags from beginning it gives an idea about the order of Seasonal MA(Q) process. 
+
+This appoach also works same with PACF plot to determine order of AR(p) and SAR(P) process. 
+
+After all, I tried to find best fitted model in the light of these informations.
+I created a for loop and since I took non-seasonal difference but not seasonal difference of observations, I manually wrote down d=1 and D=0 when creating the loop and tried best options for both AR(p), MA(q) and Seasonal-AR(P),Seasonal-MA(Q). And I also added if condition to keep sum of processes (p+q+d+P+Q+D) equal to or under 6, I put that condition to find simplier fitted model rather than complex ones in other words aim to obey parcimony principle rule. 
+
+```{r, warning=FALSE}
+d=1
+D=0
+
+for(p in 0:5){
+  for(q in 0:4){
+    for(P in 0:6){
+      for(Q in 0:5){
+        if( p+q+P+Q+d+D <= 6){ # parcimony principle
+          model <- arima(x= log(df1$Ounce_Price), order=c(p,d,q), 
+                         seasonal = list(order=c(P,D,Q), frequency = 1))
+          sse <- sum(resid(model)^2)
+          order <- paste(p,d,q,P,D,Q)
+          pval<-Box.test(model$residuals, lag=log(length(model$residuals)))
+          cat(p,d,q,P,D,Q,365, 'AIC=', model$aic, ' SSE=',sse,' p-VALUE=', 
+              pval$p.value,'\n')
+        }
+      }
+    }
+  }
+}
+```
+
+From printed results it can be seen that (0 1 0 5 0 0 1) model gives lowest AIC score among others with AIC= -95853.45  and SSE= 1.498727 and also p-VALUE= 0.3437408. This high P-value refers to the Ljung-Box statistic and allow me to reject null hypothesis in which proves that there is no any significant autocorrelation left in residuals. Same AIC level also occured in (2,1,0,3,0,0) level, but I will use first was because it is simplier. 
+
+This time I will use ````sarima()`````function to check if the assumptions met with this AR and MA values. 
+
+```{r, warning=FALSE}
+sarima(df1$Ounce_Price, 0,1,0,5,0,0,1)
+```
+
+From produced graphs above, although I expected a white noise in Residual distribution, it did not seem that way. Also from QQ plot I cannot say that residuals distibuted normally. Lastly from ACF of residuals I can still observe some spikes above alpha and p values mostly positioned below alpha, so I rejected null hypothesis that there is no any significant autocorrelation left in the residuals.
+
+Long story short, this is not a good fitted model to this data. But I also wanted to see how this model forecasts. So I fitted a model generated with the (2 1 1 0 0 2) values and forecast 50 day by using this model. However the results was not enlighting as expected. It predicts same price for all 50 of predicted days. The forecast graph and results can be seen below.
+
+```{r}
+modelx <- arima(x=log(df1$Ounce_Price), order = c(0,1,0), 
+                seasonal = list(order=c(0,0,5), period=1))
+plot(forecast(modelx))
+forecast(modelx, 50)
+
+plot(forecast(modelx ,1000),xlim=c(14500,16200),ylim=c(7,8))
+
+```
+
+And then I tried ````auto.arima()```` function to forecast with the codes below;
+
+```{r}
+summary(forecast(auto.arima(log(df1$Ounce_Price), seasonal = TRUE)))
+
+plot(forecast(auto.arima(log(df1$Ounce_Price), seasonal = TRUE),1000)
+     ,xlim=c(14500,16200),ylim=c(7,8))
+```
+
+Auto arima function provides ARIMA(0,1,1) model with seasonal drift. But it provides AIC=-96073.66 , which is higher than my first model, which means worse produced results expected with this model. However its forecast results tend to increase constantly this time. 
+
+### ARIMA & SARIMA with less data
+
+I thought this mess in my forecasts and model might be occured because of the length of dataset. So I decided to cut the dataset and took into account some part of it when fitting model and making predictions. 
+
+I cut data beginning from 2014 August till 2020 Feb just randomly. And did some visualizations again to understand data and decide the seasonality and trend. 
+
+```{r}
+df2 <- df1[13000:nrow(df1),]
+
+
+plot(df2, main="Daily Gold Prices by ounce, 01.08.2014 to 02.28.2020",
+     ylab = "Price(USD)", xlab = "Date", type="l")
+# it seems there is instability in variance and a clear upward trend on data
+# so first I will take logarithm to stabilize variance
+plot(log(df2$Ounce_Price), main = "Log of Daily Gold Prices by ounce",
+     ylab = "Log of Price(USD)", xlab = "Days")
+# now I will try to remove trend by taking difference of data
+plot(diff(df2$Ounce_Price), main = "Differences of Daily Gold Prices by ounce",
+     ylab = "Price(USD)", xlab = "Days")
+# it helped to remove trend as expected. 
+# Now I will take log-return of data
+plot(diff(log(df2$Ounce_Price)), main = "Log return of Daily Gold Prices by ounce",
+     ylab = "Log of Price(USD)", xlab = "Days") 
+
+```
+
+There is still an upward trend observed and also seasonality. So again I decided to proceed with implementing log return.
+
+
+```{r}
+acf(diff(log(df2$Ounce_Price)), main = "ACF of Log return of Daily Gold Prices by ounce",
+    ylab = "Log of Price(USD)", xlab = "Days") 
+
+#ø it seems there is a cyclic seasonality in the dataset fro ACF plot. 
+
+pacf(diff(log(df2$Ounce_Price)), main = "PACF of Log return of Daily Gold Prices by ounce",
+     ylab = "Log of Price(USD)", xlab = "Days") 
+```
+
+The ACF plot suggests MA(0) because there is not any spikes at the beginning and SMA(>=2) due to the spikes after several lag. 
+The PACF refers that AR(0) again because there is not any spikes at the beginning but SAR(>=2) due to the spikes after several lag.
+
+So as I decided to take non seasonal difference but not seasonal, d becomes 1 and D=0. Again I looped several options for p <= 1 q<= 1 and P <= 4 Q<=5 with if condition to keep their sum below 7. But this time I also determined frequency to the week with value of 7 instead of day as 1. 
+
+```{r}
+d=1
+D=0
+
+for(p in 0:1){
+  for(q in 0:1){
+    for(P in 0:4){
+      for(Q in 0:5){
+        if( p+q+P+Q+d+D <= 6){ # parcimony principle
+          model <- arima(x= log(df2$Ounce_Price), order=c(p,d,q), 
+                         seasonal = list(order=c(P,D,Q), frequency = 7))
+          sse <- sum(resid(model)^2)
+          order <- paste(p,d,q,P,D,Q)
+          pval<-Box.test(model$residuals, lag=log(length(model$residuals)))
+          cat(p,d,q,P,D,Q,7, 'AIC=', model$aic, ' SSE=',sse,' p-VALUE=', 
+              pval$p.value,'\n')
+        }
+      }
+    }
+  }
+}
+```
+
+This time for loop provides ARIMA(0 1 0 0 0 0) as my best option with lowest AIC= -14617.12 and SSE= 0.09118448. And (0 1 0 2 0 3) as my second best option with AIC= -14615.66  SSE= 0.09080153.
+
+I tried both to see if the assumptions are met. 
+
+```{r}
+sarima(log(df2$Ounce_Price), 0,1,0,0,0,0,7) 
+```
+
+From plots drawed residuals did not quite normally distributed, inspite of their distribution seems white. 
+And also from p-values generated from Ljung-Box statistic there are still significant autocorrelation left in residuals. 
+
+```{r}
+sarima(log(df2$Ounce_Price), 0,1,0,2,0,3,7)
+```
+
+Again from plots drawed, results seems not changed that much. 
+
+I also wanted to see their forecast capabilities, so I drawed plots below for second model. It has a little fluctiation on forecasted prices. 
+
+```{r}
+modelx <- arima(x=log(df2$Ounce_Price), order = c(0,1,0), 
+                seasonal = list(order=c(2,0,3), period=7))
+plot(forecast(modelx))
+forecast(modelx, 50)
+
+plot(forecast(modelx ,100),xlim=c(1800,2200),ylim=c(7,8))
+
+```
+
+I also tried auto arima function again, at first it provides ARIMA(0,1,0) with AIC=-14617.12.
+
+```{r}
+auto.arima(log(df2$Ounce_Price), seasonal = TRUE)
+```
+
+Then I pushed it to see if there is a better option, so it provides ARIMA(4,1,1) with higher AIC=-14610.03 which is worse than its first production according to AIC levels. 
+
+```{r}
+auto.arima(log(df2$Ounce_Price), start.P = 2, start.Q = 2, max.order = 6, 
+           d=1, ic="aic", trace=TRUE, stepwise = FALSE)
+```
+
+I also checked its assumptions but still they did not met. 
+
+```{r}
+sarima(log(df2$Ounce_Price), 4,1,1)
+```
+
+### ARIMA & SARIMA after decomposition
+
+I thought there is still something is missing or wrong in my model trials. So I decided to decompose the dataset to see a better picture about trend and seasonality. 
+
+```{r}
+
+comps <- decompose(ts(log(df2$Ounce_Price), deltat= 1/365))
+plot(comps)
+summary(comps)
+
+```
+
+I removed seasonality and took the difference to make my dataset stationary with the codes below. 
+
+```{r}
+x <- log(df2$Ounce_Price) - comps$seasonal
+df1_stationary <- diff(x, differences = 1)
+plot(df1_stationary)
+```
+
+It is ready to fit a model now, but first I will check ACF and PACF to determine AR and MA processes. 
+
+```{r}
+acf(df1_stationary, lag.max = 50)
+pacf(df1_stationary, lag.max = 50)
+```
+
+As it can be seen, it is clear that there are more than 1 seasonal spikes in both ACF and PACF plots. 
+
+SO I again generated a for loop with this time frequency level 5 and for p <= 1 q<= 1 and P <= 5 Q<=4 with if condition to keep their sum below 7.
+
+
+```{r}
+d=1
+D=0
+
+for(p in 0:1){
+  for(q in 0:1){
+    for(P in 0:5){
+      for(Q in 0:4){
+        if( p+q+P+Q+d+D <= 6){ # parcimony principle
+          model <- arima(x= log(df2$Ounce_Price), order=c(p,d,q), 
+                         seasonal = list(order=c(P,D,Q), frequency = 5))
+          sse <- sum(resid(model)^2)
+          order <- paste(p,d,q,P,D,Q)
+          pval<-Box.test(model$residuals, lag=log(length(model$residuals)))
+          cat(p,d,q,P,D,Q,5, 'AIC=', model$aic, ' SSE=',sse,' p-VALUE=', 
+              pval$p.value,'\n')
+        }
+      }
+    }
+  }
+}
+```
+
+Again best model occured in (0 1 0 0 0 0) with lowest AIC= -14617.12 and SSE= 0.09118448  and second best became (0 1 0 2 0 3) with AIC= -14615.68 lower SSE= 0.09080062.
+
+```{r}
+sarima(df2$Ounce_Price, 0,1,0,3,0,2,5)
+```
+
+```{r}
+sarima(df2$Ounce_Price, 0,1,0,0,0,0,5)
+```
+
+Well, as it can be seen from both models, there are still some autocorrelation remain in residuals according to Ljung-Box Statistic. 
+
+At last I generated a model manualy by only taking into account insights from ACF and PACF plots. I determined (0,1,0,4,0,3) for this model and surprisingly it provides better AIC score with AIC= -14637.75
+
+```{r}
+model2 <- arima(x=log(df2$Ounce_Price), order = c(0,1,0), 
+                seasonal = list(order=c(4,0,3), period=5), method = "ML")
+summary(model2)
+```
+
+```{r}
+sarima(log(df2$Ounce_Price), 0,1,0,4,0,3,5)
+```
+
+But still I cannot drop autocorrelation in residuals.I did forecast by using this last model anyway.  
+
+```{r}
+plot(forecast(model2),xlim=c(1900,2100),ylim=c(7.2,7.5))
+
+Box.test(model2$residuals)
+sarima(log(df2$Ounce_Price), 0,1,0,4,0,3,5)
+```
+
+Afterall I leave this approach in here and proceed to the next approach. 
+
+### TES - Triple Exponential Smoothing
+
+In my last approach I will use Exponential Smoothing method to forecast future gold prices. 
+since the dataset has both trend and seasonality I used Triple Exponential Smoothing method to forecast.
+If the dataset have not any trend or seasonality it would be enough to use Sİmple Exponential Smoothing and use ````HoltWİnters(beta=F, gama=F)````, but if the dataset has only trend but not seasonality I should use Double Exponential Smoothing and ````HoltWİnters(`gama=F)````, but now I will determine these parameters to TRUE.
+
+
+```{r}
+hw <- HoltWinters(ts(df2$Ounce_Price, frequency = 7))
+hw
+```
+
+Well done! It fitted a model with beta, gama and 5 seasonal values as coefficients.
+I can see from this result that which month has greatest ridership by finding highest s level among periods. 
+
+Now I used this model to forecast prices of next 100 days.
+
+```{r}
+plot(forecast(hw,100))
+plot(forecast(hw,100),xlim=c(250,310),ylim=c(1400,1850))
+
+```
+From forecasts, it seems that the model predicts prices with an upward trend with small seasonality.
+
+
+Now I can use this fitted model to forecast any specific time. 
+Lets say, I want to forecast price of 1st of June 2020. 
+
+```{r}
+nrow(df2)
+alpha <- hw$alpha
+beta <- hw$beta
+gamma <- hw$gamma
+as.POSIXct(strptime(max(df2$dates), "%Y-%m-%d"))-as.POSIXct(strptime("2020-06-01", "%Y-%m-%d"))
+
+```
+
+Now my dataset has prices for 2038 days.
+And I want to forecast 1st of June 2020, which is 94 days later from the last day of the dataset. 
+```{r}
+2038+94
+94%%7
+```
+So I can manually calculate it by using model coefficients above. 
+Price at day 2132(2038+94) = Coef(a) + forecast_day*coef(b) + coef(s3)
+
+I took into account coef of s3 by calculating the result of 94's modulo at base 7 that is 3. Since I determined 7 as the frequency of time series, it generates a circle of 7 day periods, so I just tried to find exact location of day 94 in that 7 day period process. 
+
+```{r}
+
+fc2132 <- 1610.2717875 + (94*0.8984085) + (-0.6778132)
+
+```
+
+
+Forecast of my fitted model will become 1694.044 USD for Ounce price at 1st of June 2020.
+I also checked it by running ````forecast(hw,94)```` and by looking the last prediction corresponds to day 94. 
+
+```{r}
+forecast(hw,94)
+```
+The result is same as calculated. This proves my manual calculation. 
+
+Lastly I would like to thank who reads this report and all kinds of suggestions/corrections/additions will be appreciated. And as Legal Disclaimer, this content is for informal purposes only, NO INVESTMENT ADVICE. 
+
+THANK YOU!
+
